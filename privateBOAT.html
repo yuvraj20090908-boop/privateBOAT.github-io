@@ -1,0 +1,516 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>privateBOAT: Peer Chat & QR Pairing</title>
+    
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <script src="https://cdn.rawgit.com/schmich/instascan/master/dist/instascan.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+
+    <style>
+        /* --- Dark Mode Variables (Matching Screenshots) --- */
+        :root {
+            --bg-dark: #1F1F1F;           
+            --bg-surface: #292929;        
+            --text-primary: #EAEAEA;      
+            --text-secondary: #B0B0B0;    
+            --accent-green: #00A884;      
+            --icon-color: #B0B0B0;
+            --message-input: #3A3A3A;
+            --chat-bubble-local: #005C4B; 
+            --chat-bubble-remote: #343434;
+        }
+
+        body {
+            font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: var(--bg-dark);
+            color: var(--text-primary);
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            overflow: hidden;
+        }
+
+        /* --- Layout & Panels --- */
+        .header, .nav-bar, .chat-input-bar {
+            background-color: var(--bg-surface);
+            padding: 10px 15px;
+            box-shadow: 0 2px 4px rgba(0, 0, 0, 0.4);
+        }
+        .header-main {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 1.5em;
+            font-weight: bold;
+        }
+        #content-area {
+            flex-grow: 1;
+            overflow-y: auto;
+            padding: 0;
+        }
+        #message-display {
+            padding: 15px;
+            overflow-y: auto;
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+        }
+        .message-bubble {
+            padding: 8px 12px;
+            border-radius: 18px;
+            max-width: 80%;
+            margin-bottom: 8px;
+            word-wrap: break-word;
+        }
+        .msg-remote {
+            background-color: var(--chat-bubble-remote);
+            align-self: flex-start;
+            border-bottom-left-radius: 2px;
+        }
+        .msg-local {
+            background-color: var(--chat-bubble-local);
+            align-self: flex-end;
+            border-bottom-right-radius: 2px;
+        }
+        .chat-input-bar {
+            display: flex;
+            align-items: center;
+            border-top: 1px solid #333;
+        }
+        .chat-input-bar input {
+            flex-grow: 1;
+            padding: 10px 15px;
+            border: none;
+            border-radius: 20px;
+            background-color: var(--message-input);
+            color: var(--text-primary);
+            margin-right: 10px;
+            font-size: 1em;
+        }
+        .chat-input-bar i { font-size: 1.5em; color: var(--icon-color); margin: 0 5px; }
+
+        /* --- Custom Views (QR & Video) --- */
+        #qr-view, #video-view {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background-color: var(--bg-dark);
+            z-index: 100;
+            display: none;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+        #qr-view canvas, #qr-view video {
+            max-width: 90%;
+            max-height: 40vh;
+            border-radius: 10px;
+            box-shadow: 0 0 10px rgba(0, 0, 0, 0.5);
+        }
+        #video-view video {
+            width: 95%;
+            max-height: 60vh;
+            background-color: black;
+            border-radius: 10px;
+        }
+        #local-video {
+            position: absolute;
+            bottom: 120px; /* Above controls */
+            right: 20px;
+            width: 120px;
+            height: 90px;
+            border-radius: 8px;
+            border: 2px solid white;
+            z-index: 101;
+        }
+        .qr-button {
+            background-color: var(--accent-green);
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 5px;
+            margin: 10px;
+            cursor: pointer;
+        }
+        .nav-bar {
+            display: flex;
+            justify-content: space-around;
+            border-top: 1px solid #333;
+            position: fixed;
+            bottom: 0;
+            width: 100%;
+        }
+        .nav-bar i { color: var(--icon-color); font-size: 1.8em; cursor: pointer; padding: 5px; }
+        .nav-bar i.active { color: var(--accent-green); }
+
+        #status-bar {
+            background-color: var(--bg-surface);
+            color: var(--text-secondary);
+            padding: 5px 15px;
+            font-size: 0.8em;
+            text-align: center;
+            border-top: 1px solid #333;
+        }
+    </style>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+</head>
+<body>
+    <div class="header">
+        <div class="header-main">
+            **privateBOAT** <div>
+                <i class="fas fa-sun" style="margin-right: 15px;"></i>
+                <i class="fas fa-bars"></i>
+            </div>
+        </div>
+    </div>
+
+    <div id="content-area">
+        <div id="message-display">
+            <p style="text-align: center; color: var(--text-secondary); margin-top: 50%;">
+                Tap the **Connect** icon (🌐) to start a new chat via QR code.
+            </p>
+            </div>
+    </div>
+    
+    <div id="status-bar">Connecting to PeerJS...</div>
+
+    <div class="chat-input-bar">
+        <i class="fas fa-paperclip"></i>
+        <input type="text" id="chat-message-input" placeholder="Message" disabled>
+        <i class="fas fa-microphone" id="send-button"></i>
+    </div>
+
+    <div class="nav-bar">
+        <i class="fas fa-comment active" id="chat-tab"></i>
+        <i class="fas fa-qrcode" id="scan-qr-tab"></i>
+        <i class="fas fa-globe" id="show-id-tab"></i>
+        <i class="fas fa-cog"></i>
+    </div>
+
+    <div id="qr-view" style="display:none;">
+        <h3 style="color: var(--text-primary); margin-bottom: 20px;" id="qr-title">Scan a QR Code to Connect</h3>
+        
+        <video id="scanner-video" style="width: 90%; max-height: 50vh; display:none;"></video>
+        
+        <canvas id="qr-code-canvas" style="display:none;"></canvas>
+
+        <p id="qr-instructions" style="color: var(--text-secondary); text-align: center; margin: 20px 0;">
+            Instructions will appear here.
+        </p>
+
+        <button class="qr-button" id="scan-button">Start Scanner</button>
+        <button class="qr-button" id="show-my-qr-button" style="display:none;">Show My QR ID</button>
+        <button class="qr-button" id="cancel-qr-button">Close</button>
+    </div>
+
+    <div id="video-view" style="display:none;">
+        <h3 style="color: var(--text-primary); margin-bottom: 10px;">Live Video Call</h3>
+        <video id="remote-video" autoplay playsinline></video>
+        <video id="local-video" muted autoplay playsinline></video>
+
+        <div class="chat-window-header" style="width: 100%; justify-content: center; background: none;">
+            <div class="actions">
+                <i class="fas fa-phone-slash" id="end-call-button" style="color: red; font-size: 2em; margin: 0 20px;"></i>
+                <i class="fas fa-window-restore" id="pip-button" style="color: var(--accent-green); font-size: 2em;"></i>
+            </div>
+        </div>
+    </div>
+
+
+    <script>
+        // --- PEERJS CONFIGURATION ---
+        // PeerJS Cloud is used by default. No API key needed.
+        let peer = null;
+        let peerId = null;
+        let conn = null; // Data connection
+        let mediaCall = null; // Media connection (video/voice)
+        let localStream = null;
+        const statusEl = document.getElementById('status-bar');
+        
+        // --- DOM Elements ---
+        const qrView = document.getElementById('qr-view');
+        const scannerVideo = document.getElementById('scanner-video');
+        const qrCanvas = document.getElementById('qr-code-canvas');
+        const remoteVideo = document.getElementById('remote-video');
+        const localVideo = document.getElementById('local-video');
+        const messageDisplay = document.getElementById('message-display');
+        const chatInput = document.getElementById('chat-message-input');
+        const sendButton = document.getElementById('send-button');
+
+        // --- Instascan setup for QR scanning ---
+        const scanner = new Instascan.Scanner({ video: scannerVideo, scanPeriod: 5 });
+
+
+        // --- UI UTILITIES ---
+        function setStatus(text, color = 'var(--text-secondary)') {
+            statusEl.textContent = text;
+            statusEl.style.color = color;
+        }
+
+        function showChatView() {
+            qrView.style.display = 'none';
+            document.getElementById('content-area').style.display = 'block';
+            document.querySelector('.chat-input-bar').style.display = 'flex';
+            document.getElementById('video-view').style.display = 'none';
+            scanner.stop(); // Stop scanner when leaving QR view
+            localVideo.style.display = 'none'; // Hide local video
+        }
+
+        function showQRView() {
+            showChatView(); // Reset to chat view first
+            document.getElementById('content-area').style.display = 'none';
+            document.querySelector('.chat-input-bar').style.display = 'none';
+            qrView.style.display = 'flex';
+            document.getElementById('scanner-video').style.display = 'none';
+            document.getElementById('qr-code-canvas').style.display = 'none';
+            document.getElementById('scan-button').style.display = 'block';
+            document.getElementById('show-my-qr-button').style.display = 'block';
+            document.getElementById('qr-title').textContent = 'Connect via QR Code';
+            document.getElementById('qr-instructions').textContent = 'Tap "Start Scanner" to read an ID, or "Show My QR ID" to be scanned.';
+        }
+
+        function showVideoView() {
+            showChatView(); // Hide main chat elements
+            document.getElementById('video-view').style.display = 'flex';
+            document.querySelector('.chat-input-bar').style.display = 'none';
+            localVideo.style.display = 'block'; // Show local video overlay
+        }
+
+        // --- PEERJS & CONNECTION LOGIC ---
+
+        function initializePeer() {
+            // Generates a random ID if not provided.
+            peer = new Peer(null, {
+                host: 'peerjs.com',
+                port: 443,
+                secure: true // Using PeerJS cloud, must be secure
+            });
+
+            peer.on('open', (id) => {
+                peerId = id;
+                setStatus(`Your ID: ${peerId} (Ready)`, 'var(--accent-green)');
+                document.getElementById('qr-instructions').textContent = `Your Peer ID is ready. Share this ID via QR code.`;
+            });
+
+            peer.on('error', (err) => {
+                console.error(err);
+                setStatus(`Error: ${err.type}`, 'red');
+            });
+            
+            // Listener for incoming data (chat) connections
+            peer.on('connection', (newConn) => {
+                conn = newConn;
+                handleDataConnection(conn);
+                setStatus('Incoming Chat Connection Established!', 'yellow');
+                showChatView(); // Automatically switch to chat view
+            });
+
+            // Listener for incoming media (video/voice) calls
+            peer.on('call', (call) => {
+                setStatus('Incoming Video Call...', 'orange');
+                navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+                    .then(stream => {
+                        localStream = stream;
+                        localVideo.srcObject = stream;
+                        call.answer(stream);
+                        handleMediaCall(call);
+                        showVideoView();
+                    })
+                    .catch(err => {
+                        console.error('Failed to get local stream', err);
+                        setStatus('Permission Error: Cannot answer call without camera/mic.', 'red');
+                    });
+            });
+        }
+
+        function handleDataConnection(dataConn) {
+            conn = dataConn;
+            chatInput.disabled = false; // Enable chat input
+            conn.on('data', (data) => {
+                appendMessage(data.message, 'msg-remote');
+            });
+            conn.on('close', () => {
+                setStatus('Connection closed.', 'red');
+                chatInput.disabled = true;
+                conn = null;
+            });
+        }
+
+        function handleMediaCall(call) {
+            mediaCall = call;
+            call.on('stream', (remoteStream) => {
+                remoteVideo.srcObject = remoteStream;
+                setStatus('Video Call Active!', 'var(--accent-green)');
+            });
+            call.on('close', () => {
+                setStatus('Call Ended.', 'red');
+                mediaCall = null;
+                remoteVideo.srcObject = null;
+                showChatView();
+            });
+        }
+
+        function connectToPeer(remotePeerId) {
+            if (!peerId) {
+                setStatus('Peer not ready. Please wait.', 'red');
+                return;
+            }
+            if (conn) {
+                setStatus('Already connected.', 'yellow');
+                return;
+            }
+
+            setStatus(`Connecting to ${remotePeerId}...`, 'yellow');
+
+            // 1. Establish Data Connection (Chat)
+            const dataConn = peer.connect(remotePeerId);
+            dataConn.on('open', () => {
+                handleDataConnection(dataConn);
+                setStatus('Chat Connection Established!', 'var(--accent-green)');
+                showChatView();
+                
+                // 2. Start Media Call (Video/Voice) immediately after data connect
+                startMediaCall(remotePeerId);
+            });
+            dataConn.on('error', (err) => {
+                console.error(err);
+                setStatus(`Connection Error: ${err.type}`, 'red');
+            });
+        }
+
+        function startMediaCall(remotePeerId) {
+            navigator.mediaDevices.getUserMedia({ video: true, audio: true })
+                .then(stream => {
+                    localStream = stream;
+                    localVideo.srcObject = stream;
+                    const call = peer.call(remotePeerId, stream);
+                    handleMediaCall(call);
+                    showVideoView();
+                })
+                .catch(err => {
+                    console.error('Failed to get local stream', err);
+                    setStatus('Warning: Proceeding without camera/mic permissions.', 'orange');
+                });
+        }
+
+        function endCall() {
+            if (mediaCall) mediaCall.close();
+            if (conn) conn.close(); 
+            if (localStream) localStream.getTracks().forEach(track => track.stop());
+            localStream = null;
+            setStatus('Disconnected.', 'red');
+        }
+
+
+        // --- QR CODE LOGIC ---
+        
+        function generateQRCode(text) {
+            qrCanvas.style.display = 'block';
+            document.getElementById('scanner-video').style.display = 'none';
+            QRCode.toCanvas(qrCanvas, text, function (error) {
+                if (error) console.error(error);
+                document.getElementById('qr-title').textContent = 'Scan This Code to Connect';
+                document.getElementById('qr-instructions').textContent = 'This QR code contains your Peer ID.';
+            });
+        }
+
+        function startQRScanner() {
+            qrCanvas.style.display = 'none';
+            document.getElementById('scanner-video').style.display = 'block';
+            document.getElementById('qr-title').textContent = 'Scanning...';
+            document.getElementById('qr-instructions').textContent = 'Point your camera at the other user\'s QR ID.';
+
+            Instascan.Camera.getCameras().then(function (cameras) {
+                if (cameras.length > 0) {
+                    scanner.start(cameras[0]);
+                } else {
+                    console.error('No cameras found.');
+                    document.getElementById('qr-instructions').textContent = 'Error: No camera detected for scanning.';
+                }
+            }).catch(function (e) {
+                console.error(e);
+                document.getElementById('qr-instructions').textContent = 'Error accessing camera: Ensure you are on HTTPS.';
+            });
+
+            scanner.addListener('scan', function (content) {
+                scanner.stop();
+                if (content.length > 10 && content.length < 50) { // Simple validation for a Peer ID
+                    connectToPeer(content);
+                } else {
+                    alert('Invalid Peer ID format received.');
+                }
+            });
+        }
+
+        // --- CHAT MESSAGE LOGIC ---
+        function appendMessage(message, type) {
+            const messageElement = document.createElement('div');
+            messageElement.className = `message-bubble ${type}`;
+            messageElement.textContent = message;
+            messageDisplay.appendChild(messageElement);
+            messageDisplay.scrollTop = messageDisplay.scrollHeight;
+        }
+
+        function sendMessage() {
+            const message = chatInput.value.trim();
+            if (message && conn && conn.open) {
+                conn.send({ message: message });
+                appendMessage(message, 'msg-local');
+                chatInput.value = '';
+            } else if (message) {
+                 alert('Not connected to a peer. Please connect first.');
+                 chatInput.value = '';
+            }
+        }
+
+
+        // --- INITIALIZATION & EVENT LISTENERS ---
+        document.addEventListener('DOMContentLoaded', () => {
+            initializePeer();
+
+            // Tab Navigation
+            document.getElementById('scan-qr-tab').addEventListener('click', showQRView);
+            document.getElementById('show-id-tab').addEventListener('click', () => {
+                 showQRView();
+                 generateQRCode(peerId);
+            });
+            document.getElementById('chat-tab').addEventListener('click', showChatView);
+            document.getElementById('cancel-qr-button').addEventListener('click', showChatView);
+
+            // QR Actions
+            document.getElementById('scan-button').addEventListener('click', startQRScanner);
+            document.getElementById('show-my-qr-button').addEventListener('click', () => generateQRCode(peerId));
+            
+            // Message Sending
+            sendButton.addEventListener('click', sendMessage);
+            chatInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') sendMessage();
+            });
+
+            // Video/Call Controls
+            document.getElementById('end-call-button').addEventListener('click', endCall);
+            
+            // PiP Logic
+            document.getElementById('pip-button').addEventListener('click', () => {
+                 if (mediaCall && remoteVideo.srcObject) {
+                    if (document.pictureInPictureElement) {
+                        document.exitPictureInPicture();
+                    } else {
+                        remoteVideo.requestPictureInPicture();
+                    }
+                 } else {
+                    alert('No active video stream to put into PiP.');
+                 }
+            });
+        });
+    </script>
+</body>
+</html>
